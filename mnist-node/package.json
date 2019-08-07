@@ -6,15 +6,14 @@
   "license": "Apache-2.0",
   "private": true,
   "engines": {
-    "node": ">=8.11.1"
+    "node": ">=8.11.0"
   },
   "dependencies": {
-    "@tensorflow/tfjs": "^0.11.5",
-    "@tensorflow/tfjs-node": "^0.1.7",
-    "node-simple-timer": "^0.1.1"
+    "@tensorflow/tfjs-node": "^1.2.3",
+    "argparse": "^1.0.10"
   },
   "scripts": {
-    "postinstall": "yarn upgrade --pattern @tensorflow"
+    "train": "node main.js"
   },
   "devDependencies": {
     "clang-format": "~1.2.2"

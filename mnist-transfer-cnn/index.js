@@ -16,6 +16,8 @@
  */
 
 import * as tf from '@tensorflow/tfjs';
+import * as tfVis from '@tensorflow/tfjs-vis';
+
 import * as loader from './loader';
 import * as ui from './ui';
 import * as util from './util';
@@ -42,6 +44,12 @@ class MnistTransferCNNPredictor {
   async init(urls) {
     this.urls = urls;
     this.model = await loader.loadHostedPretrainedModel(urls.model);
+
+    // Print model summary right after model is loaded.
+    this.model.summary();
+    tfVis.show.modelSummary(
+        {name: 'Model Summary', tab: 'Model Info'}, this.model);
+
     this.imageSize = this.model.layers[0].batchInputShape[1];
     this.numClasses = 5;
 
@@ -91,7 +99,7 @@ class MnistTransferCNNPredictor {
       try {
         const image = util.textToImageArray(imageText, this.imageSize);
         const predictOut = this.model.predict(image);
-        const winner = predictOut.argMax();
+        const winner = predictOut.argMax(1);
 
         ui.setPredictResults(predictOut.dataSync(), winner.dataSync()[0] + 5);
       } catch (e) {
@@ -105,36 +113,64 @@ class MnistTransferCNNPredictor {
     ui.status(
         'Please wait and do NOT click anything while the model retrains...',
         'blue');
-    await tf.nextFrame();
 
-    console.log('Freezing feature layers of the model.');
-    for (let i = 0; i < 7; ++i) {
-      this.model.layers[i].trainable = false;
+    const trainingMode = ui.getTrainingMode();
+    if (trainingMode === 'freeze-feature-layers') {
+      console.log('Freezing feature layers of the model.');
+      for (let i = 0; i < 7; ++i) {
+        this.model.layers[i].trainable = false;
+      }
+    } else if (trainingMode === 'reinitialize-weights') {
+      // TODO(cais): Use tf.models.modelFromJSON() once it's available in the
+      //   public API.
+      const oldLayers = this.model.layers;
+      this.model = tf.sequential();
+      for (const layer of oldLayers) {
+        const layerType = layer.getClassName();
+        const layerTypeMap = {
+          'Activation': 'activation',
+          'Conv2D': 'conv2d',
+          'Dense': 'dense',
+          'Dropout': 'dropout',
+          'Flatten': 'flatten',
+          'MaxPooling2D': 'maxPooling2d'
+        };
+        const jsLayerType = layerTypeMap[layerType];
+        this.model.add(tf.layers[jsLayerType](layer.getConfig()));
+      }
+      // TODO(cais): Use tfVis.show.modelSummary().
+      this.model.summary();
     }
     this.model.compile({
       loss: 'categoricalCrossentropy',
-      optimizer: 'Adam',
+      optimizer: tf.train.adam(0.01),
       metrics: ['acc'],
     });
+
+    // Print model summary again after compile(). You should see a number
+    // of the model's weights have become non-trainable.
+    this.model.summary();
 
     const batchSize = 128;
     const epochs = ui.getEpochs();
 
-    console.log('Retraining model.');
-    const beginMs = performance.now();
-    const history =
-        await this.model.fit(this.gte5TrainData.x, this.gte5TrainData.y, {
-          batchSize: batchSize,
-          epochs: epochs,
-          // TODO(cais): visualize validation results in frontend during
-          //   training. See b/73735367.
-          // validationData: [gte5TestXs, gte5TestYs],
-          callbacks: ui.getProgressBarCallbackConfig(epochs),
-        });
-    console.log(history.history);
-    console.log(
-        'DONE retraining model: elapsed time = ' +
-        (performance.now() - beginMs).toFixed(1) + ' ms');
+    const surfaceInfo = {name: trainingMode, tab: 'Transfer Learning'};
+    console.log('Calling model.fit()');
+    await this.model.fit(this.gte5TrainData.x, this.gte5TrainData.y, {
+      batchSize: batchSize,
+      epochs: epochs,
+      validationData: [this.gte5TestData.x, this.gte5TestData.y],
+      callbacks: [
+        ui.getProgressBarCallbackConfig(epochs),
+        tfVis.show.fitCallbacks(surfaceInfo, ['val_loss', 'val_acc'], {
+          zoomToFit: true,
+          zoomToFitAccuracy: true,
+          height: 200,
+          callbacks: ['onEpochEnd'],
+        }),
+      ]
+    });
+    console.log('DONE Calling model.fit()');
   }
 }
 
@@ -149,7 +185,7 @@ async function setupMnistTransferCNN() {
     button.addEventListener('click', async () => {
       const predictor = await new MnistTransferCNNPredictor().init(HOSTED_URLS);
       ui.prepUI(
-          x => predictor.predict(x), x => predictor.retrainModel(),
+          x => predictor.predict(x), () => predictor.retrainModel(),
           predictor.testExamples, predictor.imageSize);
     });
     button.style.display = 'inline-block';
@@ -161,13 +197,13 @@ async function setupMnistTransferCNN() {
     button.addEventListener('click', async () => {
       const predictor = await new MnistTransferCNNPredictor().init(LOCAL_URLS);
       ui.prepUI(
-          x => predictor.predict(x), x => predictor.retrainModel(),
+          x => predictor.predict(x), () => predictor.retrainModel(),
           predictor.testExamples, predictor.imageSize);
     });
     button.style.display = 'inline-block';
   }
 
-  ui.status('Standing by.');
+  ui.status('Standing by. Please load pretrained model first.');
 }
 
 setupMnistTransferCNN();

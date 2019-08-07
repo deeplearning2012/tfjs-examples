@@ -16,6 +16,7 @@
  */
 
 import * as tf from '@tensorflow/tfjs';
+import * as tfvis from '@tensorflow/tfjs-vis';
 
 import * as data from './data';
 import * as loader from './loader';
@@ -46,6 +47,7 @@ async function trainModel(xTrain, yTrain, xTest, yTest) {
   model.add(tf.layers.dense(
       {units: 10, activation: 'sigmoid', inputShape: [xTrain.shape[1]]}));
   model.add(tf.layers.dense({units: 3, activation: 'softmax'}));
+  model.summary();
 
   const optimizer = tf.train.adam(params.learningRate);
   model.compile({
@@ -54,8 +56,10 @@ async function trainModel(xTrain, yTrain, xTest, yTest) {
     metrics: ['accuracy'],
   });
 
-  const lossValues = [];
-  const accuracyValues = [];
+  const trainLogs = [];
+  const lossContainer = document.getElementById('lossCanvas');
+  const accContainer = document.getElementById('accuracyCanvas');
+  const beginMs = performance.now();
   // Call `model.fit` to train the model.
   const history = await model.fit(xTrain, yTrain, {
     epochs: params.epochs,
@@ -63,16 +67,20 @@ async function trainModel(xTrain, yTrain, xTest, yTest) {
     callbacks: {
       onEpochEnd: async (epoch, logs) => {
         // Plot the loss and accuracy values at the end of every training epoch.
-        ui.plotLosses(lossValues, epoch, logs.loss, logs.val_loss);
-        ui.plotAccuracies(accuracyValues, epoch, logs.acc, logs.val_acc);
-
-        // Await web page DOM to refresh for the most recently plotted values.
-        await tf.nextFrame();
+        const secPerEpoch =
+            (performance.now() - beginMs) / (1000 * (epoch + 1));
+        ui.status(`Training model... Approximately ${
+            secPerEpoch.toFixed(4)} seconds per epoch`)
+        trainLogs.push(logs);
+        tfvis.show.history(lossContainer, trainLogs, ['loss', 'val_loss'])
+        tfvis.show.history(accContainer, trainLogs, ['acc', 'val_acc'])
+        calculateAndDrawConfusionMatrix(model, xTest, yTest);
       },
     }
   });
-
-  ui.status('Model training complete.');
+  const secPerEpoch = (performance.now() - beginMs) / (1000 * params.epochs);
+  ui.status(
+      `Model training complete:  ${secPerEpoch.toFixed(4)} seconds per epoch`);
   return model;
 }
 
@@ -106,6 +114,27 @@ async function predictOnManualInput(model) {
 }
 
 /**
+ * Draw confusion matrix.
+ */
+async function calculateAndDrawConfusionMatrix(model, xTest, yTest) {
+  const [preds, labels] = tf.tidy(() => {
+    const preds = model.predict(xTest).argMax(-1);
+    const labels = yTest.argMax(-1);
+    return [preds, labels];
+  });
+
+  const confMatrixData = await tfvis.metrics.confusionMatrix(labels, preds);
+  const container = document.getElementById('confusion-matrix');
+  tfvis.render.confusionMatrix(
+      container,
+      {values: confMatrixData, labels: data.IRIS_CLASSES},
+      {shadeDiagonal: true},
+  );
+
+  tf.dispose([preds, labels]);
+}
+
+/**
  * Run inference on some test Iris flower data.
  *
  * @param model The instance of `tf.Model` to run the inference with.
@@ -123,6 +152,7 @@ async function evaluateModelOnTestData(model, xTest, yTest) {
     const yPred = predictOut.argMax(-1);
     ui.renderEvaluateTable(
         xData, yTrue, yPred.dataSync(), predictOut.dataSync());
+    calculateAndDrawConfusionMatrix(model, xTest, yTest);
   });
 
   predictOnManualInput(model);
